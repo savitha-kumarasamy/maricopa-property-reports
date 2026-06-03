@@ -2,6 +2,31 @@
 
 A full-stack web application for tracking Maricopa County property ownership details, tax assessments, and valuation history. Users can set up periodic email reports delivered on a configurable schedule.
 
+The backend is implemented as **Java Spring Boot microservices** behind an API gateway. (An earlier FastAPI monolith remains in git history under `backend/`.)
+
+## Architecture
+
+```
+              ┌─────────────┐
+  Frontend ──▶│ API Gateway │  :8080  (Spring Cloud Gateway, CORS, routing)
+              └──────┬──────┘
+        ┌────────────┼─────────────┬──────────────┐
+        ▼            ▼             ▼              ▼
+  Auth Service  Property Svc   Report Svc    Schedule Svc
+     :8081         :8082         :8083          :8084
+        └────────────┴──────┬──────┴──────────────┘
+                            ▼
+                     PostgreSQL (shared)
+```
+
+- **API Gateway** (`:8080`) — single entry point; routes `/api/auth/**`, `/api/properties/**`, `/api/reports/**`, `/api/schedules/**` to the services and handles CORS.
+- **Auth Service** (`:8081`) — registration, login, refresh, current user. BCrypt password hashing, JWT issuance/validation.
+- **Property Service** (`:8082`) — property CRUD plus the Maricopa County Assessor API client.
+- **Report Service** (`:8083`) — report generation and retrieval. Calls the property service to refresh data.
+- **Schedule Service** (`:8084`) — schedule CRUD, a `@Scheduled` runner (every 5 min) that generates and emails due reports via the report/auth services.
+
+Services share one PostgreSQL database. Each service validates the JWT independently using a shared secret; inter-service calls use internal (`/internal/**`) endpoints not exposed through the gateway.
+
 ## Features
 
 - **User Authentication** — Register and log in with JWT-based auth (access + refresh tokens)
@@ -15,17 +40,18 @@ A full-stack web application for tracking Maricopa County property ownership det
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic |
-| Database | PostgreSQL with JSONB |
-| Auth | JWT (python-jose + passlib/bcrypt) |
-| Email | aiosmtplib with Jinja2 templates |
-| Scheduling | APScheduler |
+| Backend | Java 17, Spring Boot 3.2, Spring Cloud Gateway, Spring Data JPA, Maven (multi-module) |
+| Database | PostgreSQL with JSONB (Hibernate) |
+| Auth | JWT (jjwt) + BCrypt (spring-security-crypto) |
+| Email | Spring Mail (JavaMailSender) |
+| Scheduling | Spring `@Scheduled` |
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS |
 | External API | [Maricopa County Assessor API](https://mcassessor.maricopa.gov) |
 
 ## Prerequisites
 
-- Python 3.11+
+- Java 17+
+- Maven 3.6.3+
 - Node.js 18+
 - PostgreSQL 14+
 
@@ -37,19 +63,23 @@ A full-stack web application for tracking Maricopa County property ownership det
 createdb maricopa_reports
 ```
 
-### 2. Backend
+### 2. Backend (microservices)
+
+Build all modules, then start each service (each reads `DB_*`, `JWT_SECRET`, etc. from the environment; sensible localhost defaults are baked in):
 
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env  # Edit with your settings
-alembic upgrade head
-uvicorn app.main:app --reload
+cd services
+mvn -DskipTests install
+
+# Start each in its own terminal (or background):
+java -jar auth-service/target/auth-service-1.0.0.jar       # :8081
+java -jar property-service/target/property-service-1.0.0.jar  # :8082
+java -jar report-service/target/report-service-1.0.0.jar   # :8083
+java -jar schedule-service/target/schedule-service-1.0.0.jar # :8084
+java -jar gateway/target/gateway-1.0.0.jar                 # :8080
 ```
 
-The API will be available at `http://localhost:8000` with interactive docs at `/docs`.
+The gateway will be available at `http://localhost:8080` and is the only port the frontend talks to. Tables are created automatically by Hibernate (`ddl-auto=update`).
 
 ### 3. Frontend
 
@@ -64,9 +94,10 @@ The frontend will be available at `http://localhost:5173`.
 ### 4. Docker (Alternative)
 
 ```bash
-cp backend/.env.example .env
 docker compose up --build
 ```
+
+This builds and starts Postgres, all five Spring Boot services, and the frontend (served by Nginx on `:3000`, proxying `/api` to the gateway).
 
 ## Configuration
 
@@ -108,6 +139,8 @@ SMTP_PASSWORD=your-app-password
 - `GET /api/reports/{id}` — Report details
 - `POST /api/reports/generate/{property_id}` — Generate report
 
+> Endpoint paths and request/response shapes are unchanged from the original FastAPI backend, so the frontend integrates without contract changes.
+
 ### Schedules
 - `GET /api/schedules` — List schedules
 - `POST /api/schedules` — Create schedule
@@ -128,19 +161,16 @@ The system uses 5 tables in PostgreSQL:
 
 ```
 maricopa-property-reports/
-├── backend/
-│   ├── app/
-│   │   ├── main.py              # FastAPI entry point
-│   │   ├── config.py            # Environment settings
-│   │   ├── database.py          # SQLAlchemy async engine
-│   │   ├── models/              # ORM models
-│   │   ├── schemas/             # Pydantic schemas
-│   │   ├── api/                 # Route handlers
-│   │   ├── services/            # Business logic
-│   │   └── templates/           # Email templates
-│   ├── alembic/                 # Database migrations
-│   ├── requirements.txt
-│   └── Dockerfile
+├── services/                    # Java Spring Boot microservices (Maven multi-module)
+│   ├── pom.xml                  # Parent POM (dependency management)
+│   ├── common/                  # Shared JWT, security filter, error handling
+│   ├── auth-service/            # :8081
+│   ├── property-service/        # :8082 (+ Maricopa API client)
+│   ├── report-service/          # :8083
+│   ├── schedule-service/        # :8084 (+ @Scheduled runner, email)
+│   ├── gateway/                 # :8080 (Spring Cloud Gateway)
+│   └── Dockerfile               # Shared multi-stage build (MODULE arg)
+├── backend/                     # Legacy FastAPI monolith (kept for reference)
 ├── frontend/
 │   ├── src/
 │   │   ├── api/                 # API client functions

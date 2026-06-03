@@ -1,0 +1,27 @@
+server:
+  port: ${SERVER_PORT:8082}
+
+spring:
+  application:
+    name: property-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:maricopa_reports}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:change-me-in-production-use-a-real-secret-key}
+  maricopa:
+    base-url: ${MARICOPA_API_BASE_URL:https://mcassessor.maricopa.gov}
+    token: ${MARICOPA_API_TOKEN:}
